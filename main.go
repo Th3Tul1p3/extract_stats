@@ -5,6 +5,7 @@ import (
     "log"
     "os"
     "path/filepath"
+	"io"
 	"strings"
 )
 
@@ -15,7 +16,7 @@ func main() {
     }
 
 	defer logFile.Close()
-	log.SetOutput(logFile)
+	log.SetOutput(io.MultiWriter(os.Stdout, logFile))
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("Application started")
 
