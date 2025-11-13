@@ -9,6 +9,8 @@ import (
 	"archive/zip"
 	"regexp"
 	"bufio"
+	"sort"
+	"crypto/sha256"
 )
 
 func main() {
@@ -33,6 +35,7 @@ func main() {
 
 func listFiles(root string) int {
 	var counter int = 0
+	h := sha256.New()
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			log.Printf("Impossible de lire %s : %v\n", path, err)
@@ -44,13 +47,16 @@ func listFiles(root string) int {
 		}
 
 		if strings.HasSuffix(strings.ToLower(d.Name()), ".zip") {
-			log.Printf(path)
-
 			dirs, err := listDirsInZip(path)
-			if err != nil {
-				log.Fatal(err)
+			if len(dirs) == 0 || err != nil {
+				return nil 
 			}
 
+			log.Printf(path)
+			h.Write([]byte(path))
+			bs := h.Sum(nil)
+				
+			log.Printf("%x\n", bs)
 			log.Println("Répertoires:", dirs)
 			counter++
 		}
@@ -124,8 +130,8 @@ func listDirsInZip(zipPath string) ([]string, error) {
 
 	var dirs []string
 	for d := range dirSet {
-		dirs = append(dirs, d)
+		dirs = append(dirs, strings.ToLower(d))
 	}
-
+	sort.Strings(dirs)
 	return dirs, nil
 }
