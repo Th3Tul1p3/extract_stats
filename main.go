@@ -1,35 +1,35 @@
 package main
 
 import (
-    "log"
-    "os"
-    "path/filepath"
-	"io"
-	"strings"
 	"archive/zip"
-	"regexp"
 	"bufio"
-	"sort"
 	"crypto/sha256"
-	"slices"
-	"howett.net/plist"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
+	"howett.net/plist"
+	"io"
+	"log"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"sort"
+	"strings"
 )
 
 type json_result struct {
-    OS_type   string
-    Version string 
-	Hash string
+	OS_type string
+	Version string
+	Hash    string
 }
 
 func main() {
 	logFile := setup_logging()
-    defer logFile.Close()
+	defer logFile.Close()
 
-    dir := "D:\\"
+	dir := "D:\\"
 
-    var total_counter, extractions_counter = listFiles(dir)
+	var total_counter, extractions_counter = listFiles(dir)
 
 	log.Println("Number of Zip founded: ", total_counter)
 	log.Println("Number of Extractions founded: ", extractions_counter)
@@ -45,8 +45,8 @@ func setup_logging() *os.File {
 	log.SetOutput(io.MultiWriter(os.Stdout, logFile))
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("Application started")
-	
-    return logFile
+
+	return logFile
 }
 
 func listFiles(root string) (int, int) {
@@ -55,7 +55,7 @@ func listFiles(root string) (int, int) {
 
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			log.Printf("Impossible de lire %s : %v\n", path, err)
+			log.Printf("%v\n", err)
 			return nil
 		}
 
@@ -67,7 +67,7 @@ func listFiles(root string) (int, int) {
 			total_counter++
 			dirs, info_result, err := listDirsInZip(path)
 			if len(dirs) == 0 || err != nil {
-				return nil 
+				return nil
 			}
 
 			log.Printf("%s", path)
@@ -77,7 +77,7 @@ func listFiles(root string) (int, int) {
 				log.Println("LIKELY ANDROID DEVICE, Répertoires:", dirs)
 				log.Println(string(info_result_json))
 				extractions_counter++
-			} else if slices.Contains(dirs, "applications/") || slices.Contains(dirs, "private/"){
+			} else if slices.Contains(dirs, "applications/") || slices.Contains(dirs, "private/") {
 				log.Println("LIKELY APPLE DEVICE, Répertoires:", dirs)
 				log.Println(string(info_result_json))
 				extractions_counter++
@@ -119,72 +119,35 @@ func listDirsInZip(zipPath string) ([]string, json_result, error) {
 		pattern = `.*private/var/installd/Library/MobileInstallation/LastBuildInfo.plist$`
 		re2, err2 := regexp.Compile(pattern)
 		if err2 != nil || err1 != nil {
-			log.Fatal(err)
+			log.Fatal("error")
 		}
 
 		if re1.MatchString(name) {
-			prefixes := []string{
-				"ro.build.version.release=",
-				"ro.build.version.security_patch=",
-			}
-
-			rc, err := f.Open()
-			if err != nil {
-				log.Fatal(err)
-			}
-			defer rc.Close()
-
-			var result []string
-			scanner := bufio.NewScanner(rc)
-
-			for scanner.Scan() {
-				line := scanner.Text()
-				for _, prefix := range prefixes {
-					if strings.HasPrefix(line, prefix) {
-						result = append(result, line[len(prefix):])
-						break 
-					}
-				}
-			}
-
-			if err := scanner.Err(); err != nil {
-				log.Fatal(err)
-			}
+			result := get_android_details(f)
 
 			info_result = json_result{
-				OS_type:   "Android",
+				OS_type: "Android",
 				Version: result[0] + " " + result[1],
-				Hash: bs,
+				Hash:    bs,
 			}
-		} else if re2.MatchString(name){
-			rc, err := f.Open()
-			if err != nil {
-				log.Fatal(err)
-			}
-			data, _ := io.ReadAll(rc)
-			rc.Close()
-
-			var result map[string]any
-			_, err = plist.Unmarshal(data, &result)
-			if err != nil {
-				return nil, info_result, err
-			}
+		} else if re2.MatchString(name) {
+			result := read_plist(f, info_result)
 
 			productName, ok1 := result["ProductName"].(string)
 			shortVersion, ok2 := result["ShortVersionString"].(string)
 
-			if ok1 && ok2{
+			if ok1 && ok2 {
 				info_result = json_result{
 					OS_type: productName,
 					Version: shortVersion,
-					Hash: bs,
+					Hash:    bs,
 				}
-			} 
+			}
 		}
 
 		parts := strings.Split(name, "/")
 		if len(parts) > 2 {
-			topDir := parts[1] + "/" 
+			topDir := parts[1] + "/"
 			dirSet[topDir] = struct{}{}
 		}
 	}
@@ -195,6 +158,53 @@ func listDirsInZip(zipPath string) ([]string, json_result, error) {
 	}
 	sort.Strings(dirs)
 	return dirs, info_result, nil
+}
+
+func read_plist(f *zip.File, info_result json_result) map[string]any {
+	rc, err := f.Open()
+	if err != nil {
+		log.Fatal(err)
+	}
+	data, _ := io.ReadAll(rc)
+	rc.Close()
+
+	var result map[string]any
+	_, err = plist.Unmarshal(data, &result)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return result
+}
+
+func get_android_details(f *zip.File) []string {
+	prefixes := []string{
+		"ro.build.version.release=",
+		"ro.build.version.security_patch=",
+	}
+
+	rc, err := f.Open()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rc.Close()
+
+	var result []string
+	scanner := bufio.NewScanner(rc)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(line, prefix) {
+				result = append(result, line[len(prefix):])
+				break
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		log.Fatal(err)
+	}
+	return result
 }
 
 func get_filename_hash(zipPath string) string {
