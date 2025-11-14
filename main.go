@@ -52,10 +52,11 @@ func setup_logging() *os.File {
 func listFiles(root string) (int, int) {
 	var total_counter int = 0
 	var extractions_counter int = 0
+	var zip_path []string
 
+	log.Println("Search Zip files")
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			log.Printf("%v\n", err)
 			return nil
 		}
 
@@ -65,29 +66,35 @@ func listFiles(root string) (int, int) {
 
 		if strings.HasSuffix(strings.ToLower(d.Name()), ".zip") {
 			total_counter++
-			dirs, info_result, err := listDirsInZip(path)
-			if len(dirs) == 0 || err != nil {
-				return nil
-			}
-
-			log.Printf("%s", path)
-			info_result_json, _ := json.Marshal(info_result)
-
-			if slices.Contains(dirs, "data/") {
-				log.Println("LIKELY ANDROID DEVICE, Répertoires:", dirs)
-				log.Println(string(info_result_json))
-				extractions_counter++
-			} else if slices.Contains(dirs, "applications/") || slices.Contains(dirs, "private/") {
-				log.Println("LIKELY APPLE DEVICE, Répertoires:", dirs)
-				log.Println(string(info_result_json))
-				extractions_counter++
-			} else {
-				log.Println("TRIAGE!! Répertoires:", dirs)
-			}
+			zip_path = append(zip_path, path)
 		}
 
 		return nil
 	})
+	log.Println("Number of Zip founded: ", total_counter)
+	log.Println("Processing Zip files")
+
+	for _, path := range zip_path{
+		dirs, info_result, err := listDirsInZip(path)
+		if len(dirs) == 0 || err != nil {
+			continue
+		}
+
+		log.Printf("%s", path)
+		info_result_json, _ := json.Marshal(info_result)
+
+		if slices.Contains(dirs, "data/") {
+			log.Println("LIKELY ANDROID DEVICE, Répertoires:", dirs)
+			log.Println(string(info_result_json))
+			extractions_counter++
+		} else if slices.Contains(dirs, "applications/") || slices.Contains(dirs, "private/") {
+			log.Println("LIKELY APPLE DEVICE, Répertoires:", dirs)
+			log.Println(string(info_result_json))
+			extractions_counter++
+		} else {
+			log.Println("TRIAGE!! Répertoires:", dirs)
+		}
+	}
 
 	if err != nil {
 		log.Fatal(err)
@@ -131,7 +138,7 @@ func listDirsInZip(zipPath string) ([]string, json_result, error) {
 				Hash:    bs,
 			}
 		} else if re2.MatchString(name) {
-			result := read_plist(f, info_result)
+			result := read_plist(f)
 
 			productName, ok1 := result["ProductName"].(string)
 			shortVersion, ok2 := result["ShortVersionString"].(string)
@@ -160,7 +167,7 @@ func listDirsInZip(zipPath string) ([]string, json_result, error) {
 	return dirs, info_result, nil
 }
 
-func read_plist(f *zip.File, info_result json_result) map[string]any {
+func read_plist(f *zip.File) map[string]any {
 	rc, err := f.Open()
 	if err != nil {
 		log.Fatal(err)
