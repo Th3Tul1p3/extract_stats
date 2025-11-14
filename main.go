@@ -24,15 +24,8 @@ type json_result struct {
 }
 
 func main() {
-	logFile, err := os.OpenFile("app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-    if err != nil {
-        log.Fatalf("Failed to open log file: %v", err)
-    }
-
-	defer logFile.Close()
-	log.SetOutput(io.MultiWriter(os.Stdout, logFile))
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	log.Println("Application started")
+	logFile := setup_logging()
+    defer logFile.Close()
 
     dir := "D:\\"
 
@@ -41,6 +34,19 @@ func main() {
 	log.Println("Number of Zip founded: ", total_counter)
 	log.Println("Number of Extractions founded: ", extractions_counter)
 	log.Println("Application Ended")
+}
+
+func setup_logging() *os.File {
+	logFile, err := os.OpenFile("app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		log.Fatalf("Failed to open log file: %v", err)
+	}
+
+	log.SetOutput(io.MultiWriter(os.Stdout, logFile))
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.Println("Application started")
+	
+    return logFile
 }
 
 func listFiles(root string) (int, int) {
@@ -65,7 +71,6 @@ func listFiles(root string) (int, int) {
 			}
 
 			log.Printf("%s", path)
-
 			info_result_json, _ := json.Marshal(info_result)
 
 			if slices.Contains(dirs, "data/") {
@@ -91,9 +96,7 @@ func listFiles(root string) (int, int) {
 }
 
 func listDirsInZip(zipPath string) ([]string, json_result, error) {
-	h := sha256.New()
-	h.Write([]byte(zipPath))
-	bs := hex.EncodeToString(h.Sum(nil))
+	bs := get_filename_hash(zipPath)
 
 	info_result := json_result{
 		Hash: bs,
@@ -180,7 +183,6 @@ func listDirsInZip(zipPath string) ([]string, json_result, error) {
 		}
 
 		parts := strings.Split(name, "/")
-		//log.Printf(" %s %d %s \n", parts, len(parts), parts[1])
 		if len(parts) > 2 {
 			topDir := parts[1] + "/" 
 			dirSet[topDir] = struct{}{}
@@ -193,4 +195,11 @@ func listDirsInZip(zipPath string) ([]string, json_result, error) {
 	}
 	sort.Strings(dirs)
 	return dirs, info_result, nil
+}
+
+func get_filename_hash(zipPath string) string {
+	h := sha256.New()
+	h.Write([]byte(zipPath))
+	bs := hex.EncodeToString(h.Sum(nil))
+	return bs
 }
