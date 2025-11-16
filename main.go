@@ -6,21 +6,26 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"howett.net/plist"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
+	"sync"
+	"time"
+
+	"howett.net/plist"
 )
 
 type json_result struct {
 	OS_type string
 	Version string
 	Hash    string
+	Directory []string
 }
 
 func main() {
@@ -29,10 +34,10 @@ func main() {
 
 	dir := "D:\\"
 
-	var total_counter, extractions_counter = listFiles(dir)
+	log.Println("Application started")
+	var total_counter = listFiles(dir)
 
 	log.Println("Number of Zip founded: ", total_counter)
-	log.Println("Number of Extractions founded: ", extractions_counter)
 	log.Println("Application Ended")
 }
 
@@ -44,12 +49,11 @@ func setup_logging() *os.File {
 
 	log.SetOutput(io.MultiWriter(os.Stdout, logFile))
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	log.Println("Application started")
 
 	return logFile
 }
 
-func listFiles(root string) (int, int) {
+func listFiles(root string) int {
 	var total_counter int = 0
 	var extractions_counter int = 0
 	var zip_path []string
@@ -66,40 +70,29 @@ func listFiles(root string) (int, int) {
 
 		if strings.HasSuffix(strings.ToLower(d.Name()), ".zip") {
 			total_counter++
-			zip_path = append(zip_path, path)
+			if !strings.Contains(strings.ToLower(path), "takeout") &&
+				!strings.Contains(strings.ToLower(path), "icloud") &&
+				!strings.Contains(strings.ToLower(path), "onedrive") &&
+				!strings.Contains(strings.ToLower(path), "leapp") &&
+				!strings.Contains(strings.ToLower(path), "axiom") {
+				if !strings.Contains(strings.ToLower(path), "logical") {
+					zip_path = append(zip_path, path)
+				} else {
+					extractions_counter++
+				}
+			}
 		}
-
 		return nil
 	})
 	log.Println("Number of Zip founded: ", total_counter)
 	log.Println("Processing Zip files")
 
-	for _, path := range zip_path{
-		dirs, info_result, err := listDirsInZip(path)
-		if len(dirs) == 0 || err != nil {
-			continue
-		}
-
-		log.Printf("%s", path)
-		info_result_json, _ := json.Marshal(info_result)
-
-		if slices.Contains(dirs, "data/") {
-			log.Println("LIKELY ANDROID DEVICE, Répertoires:", dirs)
-			log.Println(string(info_result_json))
-			extractions_counter++
-		} else if slices.Contains(dirs, "applications/") || slices.Contains(dirs, "private/") {
-			log.Println("LIKELY APPLE DEVICE, Répertoires:", dirs)
-			log.Println(string(info_result_json))
-			extractions_counter++
-		} else {
-			log.Println("TRIAGE!! Répertoires:", dirs)
-		}
-	}
+	processAllZips(zip_path, extractions_counter)
 
 	if err != nil {
 		log.Fatal(err)
 	}
-	return total_counter, extractions_counter
+	return total_counter
 }
 
 func listDirsInZip(zipPath string) ([]string, json_result, error) {
@@ -164,6 +157,8 @@ func listDirsInZip(zipPath string) ([]string, json_result, error) {
 		dirs = append(dirs, strings.ToLower(d))
 	}
 	sort.Strings(dirs)
+	
+	info_result.Directory = dirs
 	return dirs, info_result, nil
 }
 
@@ -219,4 +214,86 @@ func get_filename_hash(zipPath string) string {
 	h.Write([]byte(zipPath))
 	bs := hex.EncodeToString(h.Sum(nil))
 	return bs
+}
+
+func processAllZips(zipPaths []string, extractionsCounter int) {
+	workerCount := runtime.NumCPU() // optimal
+	jobs := make(chan string)
+	var json_filename string = time.Now().Format(time.RFC822) + ".json"
+	var wg sync.WaitGroup
+
+	var mu sync.Mutex
+
+	// Workers
+	for range workerCount {
+		wg.Go(func() {
+			for path := range jobs {
+
+				dirs, infoResult, err := listDirsInZip(path)
+				if err != nil || len(dirs) == 0 {
+					continue
+				}
+
+				log.Printf("%s", path)
+				//infoJSON, _ := json.Marshal(infoResult)
+
+				if slices.Contains(dirs, "data/") {
+					if len(infoResult.OS_type) == 0 {
+						infoResult.OS_type = "Android"
+					}
+
+					log.Println(infoResult)
+
+					mu.Lock()
+					appendResultToJSONArray(json_filename, infoResult)
+					extractionsCounter++
+					mu.Unlock()
+
+				} else if slices.Contains(dirs, "applications/") || slices.Contains(dirs, "private/") {
+					if len(infoResult.OS_type) == 0 {
+						infoResult.OS_type = "Apple"
+					}
+
+					log.Println(infoResult)
+
+					mu.Lock()
+					appendResultToJSONArray(json_filename, infoResult)
+					extractionsCounter++
+					mu.Unlock()
+				} else {
+					log.Println("TRIAGE!! Répertoires:", dirs)
+				}
+			}
+		})
+	}
+
+	// Envoi des tâches
+	go func() {
+		for _, path := range zipPaths {
+			jobs <- path
+		}
+		close(jobs)
+	}()
+
+	wg.Wait()
+
+	log.Println("Total extractions:", extractionsCounter)
+}
+
+func appendResultToJSONArray(path string, r json_result) error {
+    var list []json_result
+
+    data, _ := os.ReadFile(path)
+    if len(data) > 0 {
+        _ = json.Unmarshal(data, &list)
+    }
+
+    list = append(list, r)
+
+    out, err := json.MarshalIndent(list, "", "  ")
+    if err != nil {
+        return err
+    }
+
+    return os.WriteFile(path, out, 0644)
 }
