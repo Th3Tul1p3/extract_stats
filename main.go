@@ -3,9 +3,11 @@ package main
 import (
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"io"
 	"log"
 	"os"
@@ -16,16 +18,32 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
+	"github.com/sagernet/abx-go"
 	"howett.net/plist"
 )
 
 type json_result struct {
-	OS_type string
-	Version string
-	Hash    string
+	OS_type   string
+	Version   string
+	Hash      string
 	Directory []string
+	Packages  []package_info
+}
+
+type package_info struct {
+	Name    string
+	Version string
+}
+
+type Packages struct {
+	XMLName xml.Name   `xml:"packages"`
+	Package []PkgEntry `xml:"package"`
+}
+
+type PkgEntry struct {
+	Name    string `xml:"name,attr"`
+	Version string `xml:"version,attr"`
 }
 
 func main() {
@@ -39,6 +57,22 @@ func main() {
 
 	log.Println("Number of Zip founded: ", total_counter)
 	log.Println("Application Ended")
+}
+
+func LoadPackagesXml(f *zip.File) *Packages {
+
+	rc, _ := f.Open()
+	defer rc.Close()
+	data, _ := io.ReadAll(rc)
+	reader, _ := abx.NewReader(bytes.NewReader(data))
+
+	decoder := xml.NewTokenDecoder(reader)
+	var pkgs Packages
+	if err := decoder.Decode(&pkgs); err != nil {
+		log.Fatalln(err)
+	}
+
+	return &pkgs
 }
 
 func setup_logging() *os.File {
@@ -95,17 +129,73 @@ func listFiles(root string) int {
 	return total_counter
 }
 
+func processAllZips(zipPaths []string, extractionsCounter int) {
+	workerCount := runtime.NumCPU()
+	jobs := make(chan string)
+	var json_filename string = "results.json"
+	var wg sync.WaitGroup
+
+	var mu sync.Mutex
+
+	for range workerCount {
+		wg.Go(func() {
+			for path := range jobs {
+
+				dirs, infoResult, err := listDirsInZip(path)
+				if err != nil || len(dirs) == 0 {
+					continue
+				}
+
+				log.Printf("%s", path)
+
+				if slices.Contains(dirs, "data/") {
+					if len(infoResult.OS_type) == 0 {
+						infoResult.OS_type = "Android"
+					}
+
+					mu.Lock()
+					appendResultToJSONArray(json_filename, infoResult)
+					extractionsCounter++
+					mu.Unlock()
+
+				} else if slices.Contains(dirs, "applications/") || slices.Contains(dirs, "private/") {
+					if len(infoResult.OS_type) == 0 {
+						infoResult.OS_type = "Apple"
+					}
+
+					mu.Lock()
+					appendResultToJSONArray(json_filename, infoResult)
+					extractionsCounter++
+					mu.Unlock()
+				} else {
+					log.Println("TRIAGE!! Répertoires:", dirs)
+				}
+			}
+		})
+	}
+
+	go func() {
+		for _, path := range zipPaths {
+			jobs <- path
+		}
+		close(jobs)
+	}()
+
+	wg.Wait()
+
+	log.Println("Total extractions:", extractionsCounter)
+}
+
 func listDirsInZip(zipPath string) ([]string, json_result, error) {
 	bs := get_filename_hash(zipPath)
 
 	info_result := json_result{
 		Hash: bs,
 	}
+	var packages_list []package_info
 
-	r, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return nil, info_result, err
-	}
+	r, _ := zip.OpenReader(zipPath)
+
 	defer r.Close()
 
 	dirSet := make(map[string]struct{})
@@ -114,13 +204,13 @@ func listDirsInZip(zipPath string) ([]string, json_result, error) {
 		name := filepath.ToSlash(f.Name)
 
 		pattern := `.*Dump/system/build\.prop$`
-		re1, err1 := regexp.Compile(pattern)
+		re1, _ := regexp.Compile(pattern)
 
 		pattern = `.*private/var/installd/Library/MobileInstallation/LastBuildInfo.plist$`
-		re2, err2 := regexp.Compile(pattern)
-		if err2 != nil || err1 != nil {
-			log.Fatal("error")
-		}
+		re2, _ := regexp.Compile(pattern)
+
+		pattern = `.*packages.xml$`
+		re3, _ := regexp.Compile(pattern)
 
 		if re1.MatchString(name) {
 			result := get_android_details(f)
@@ -143,6 +233,14 @@ func listDirsInZip(zipPath string) ([]string, json_result, error) {
 					Hash:    bs,
 				}
 			}
+		} else if re3.MatchString(name) {
+			pkgs := LoadPackagesXml(f)
+			for _, p := range pkgs.Package {
+				var app package_info
+				app.Name = p.Name
+				app.Version = p.Version
+				packages_list = append(packages_list, app)
+			}
 		}
 
 		parts := strings.Split(name, "/")
@@ -157,8 +255,9 @@ func listDirsInZip(zipPath string) ([]string, json_result, error) {
 		dirs = append(dirs, strings.ToLower(d))
 	}
 	sort.Strings(dirs)
-	
+
 	info_result.Directory = dirs
+	info_result.Packages = packages_list
 	return dirs, info_result, nil
 }
 
@@ -216,84 +315,20 @@ func get_filename_hash(zipPath string) string {
 	return bs
 }
 
-func processAllZips(zipPaths []string, extractionsCounter int) {
-	workerCount := runtime.NumCPU() // optimal
-	jobs := make(chan string)
-	var json_filename string = time.Now().Format(time.RFC822) + ".json"
-	var wg sync.WaitGroup
+func appendResultToJSONArray(path string, r json_result) error {
+	var list []json_result
 
-	var mu sync.Mutex
-
-	// Workers
-	for range workerCount {
-		wg.Go(func() {
-			for path := range jobs {
-
-				dirs, infoResult, err := listDirsInZip(path)
-				if err != nil || len(dirs) == 0 {
-					continue
-				}
-
-				log.Printf("%s", path)
-				//infoJSON, _ := json.Marshal(infoResult)
-
-				if slices.Contains(dirs, "data/") {
-					if len(infoResult.OS_type) == 0 {
-						infoResult.OS_type = "Android"
-					}
-
-					log.Println(infoResult)
-
-					mu.Lock()
-					appendResultToJSONArray(json_filename, infoResult)
-					extractionsCounter++
-					mu.Unlock()
-
-				} else if slices.Contains(dirs, "applications/") || slices.Contains(dirs, "private/") {
-					if len(infoResult.OS_type) == 0 {
-						infoResult.OS_type = "Apple"
-					}
-
-					log.Println(infoResult)
-
-					mu.Lock()
-					appendResultToJSONArray(json_filename, infoResult)
-					extractionsCounter++
-					mu.Unlock()
-				} else {
-					log.Println("TRIAGE!! Répertoires:", dirs)
-				}
-			}
-		})
+	data, _ := os.ReadFile(path)
+	if len(data) > 0 {
+		_ = json.Unmarshal(data, &list)
 	}
 
-	// Envoi des tâches
-	go func() {
-		for _, path := range zipPaths {
-			jobs <- path
-		}
-		close(jobs)
-	}()
+	list = append(list, r)
 
-	wg.Wait()
+	out, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		return err
+	}
 
-	log.Println("Total extractions:", extractionsCounter)
-}
-
-func appendResultToJSONArray(path string, r json_result) error {
-    var list []json_result
-
-    data, _ := os.ReadFile(path)
-    if len(data) > 0 {
-        _ = json.Unmarshal(data, &list)
-    }
-
-    list = append(list, r)
-
-    out, err := json.MarshalIndent(list, "", "  ")
-    if err != nil {
-        return err
-    }
-
-    return os.WriteFile(path, out, 0644)
+	return os.WriteFile(path, out, 0644)
 }
