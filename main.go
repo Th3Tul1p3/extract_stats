@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
@@ -21,19 +22,16 @@ import (
 
 	"github.com/sagernet/abx-go"
 	"howett.net/plist"
+	_ "modernc.org/sqlite"
 )
 
 type json_result struct {
-	OS_type   string
-	Version   string
-	Hash      string
-	Directory []string
-	Packages  []package_info
-}
-
-type package_info struct {
-	Name    string
-	Version string
+	Manufacturer string
+	Product_Type string
+	Version      string
+	Hash         string
+	Directory    []string
+	Packages     []string
 }
 
 type Packages struct {
@@ -104,12 +102,15 @@ func listFiles(root string) int {
 
 		if strings.HasSuffix(strings.ToLower(d.Name()), ".zip") {
 			total_counter++
-			if !strings.Contains(strings.ToLower(path), "takeout") &&
-				!strings.Contains(strings.ToLower(path), "icloud") &&
-				!strings.Contains(strings.ToLower(path), "onedrive") &&
-				!strings.Contains(strings.ToLower(path), "leapp") &&
-				!strings.Contains(strings.ToLower(path), "axiom") {
-				if !strings.Contains(strings.ToLower(path), "logical") {
+			lower := strings.ToLower(path)
+
+			if !strings.Contains(lower, "takeout") &&
+				!strings.Contains(lower, "icloud") &&
+				!strings.Contains(lower, "onedrive") &&
+				!strings.Contains(lower, "leapp") &&
+				!strings.Contains(lower, "axiom") {
+
+				if !strings.Contains(lower, "logical") {
 					zip_path = append(zip_path, path)
 				} else {
 					extractions_counter++
@@ -118,6 +119,7 @@ func listFiles(root string) int {
 		}
 		return nil
 	})
+
 	log.Println("Number of Zip founded: ", total_counter)
 	log.Println("Processing Zip files")
 
@@ -149,8 +151,8 @@ func processAllZips(zipPaths []string, extractionsCounter int) {
 				log.Printf("%s", path)
 
 				if slices.Contains(dirs, "data/") {
-					if len(infoResult.OS_type) == 0 {
-						infoResult.OS_type = "Android"
+					if len(infoResult.Manufacturer) == 0 {
+						infoResult.Manufacturer = "Android"
 					}
 
 					mu.Lock()
@@ -159,8 +161,8 @@ func processAllZips(zipPaths []string, extractionsCounter int) {
 					mu.Unlock()
 
 				} else if slices.Contains(dirs, "applications/") || slices.Contains(dirs, "private/") {
-					if len(infoResult.OS_type) == 0 {
-						infoResult.OS_type = "Apple"
+					if len(infoResult.Manufacturer) == 0 {
+						infoResult.Manufacturer = "Apple"
 					}
 
 					mu.Lock()
@@ -192,7 +194,7 @@ func listDirsInZip(zipPath string) ([]string, json_result, error) {
 	info_result := json_result{
 		Hash: bs,
 	}
-	var packages_list []package_info
+	var packages_list []string
 
 	r, _ := zip.OpenReader(zipPath)
 
@@ -200,26 +202,30 @@ func listDirsInZip(zipPath string) ([]string, json_result, error) {
 
 	dirSet := make(map[string]struct{})
 
+	pattern := `.*Dump/system/build\.prop$`
+	re1, _ := regexp.Compile(pattern)
+
+	pattern = `.*private/var/installd/Library/MobileInstallation/LastBuildInfo.plist$`
+	re2, _ := regexp.Compile(pattern)
+
+	pattern = `.*packages.xml$`
+	re3, _ := regexp.Compile(pattern)
+
+	pattern = `.*private/var/mobile/Library/FrontBoard/applicationState.db$`
+	re4, _ := regexp.Compile(pattern)
+
+	pattern = `.*private/var/containers/Data/System/.*/Library/activation_records/activation_record.plist$`
+	re5, _ := regexp.Compile(pattern)
+
 	for _, f := range r.File {
 		name := filepath.ToSlash(f.Name)
-
-		pattern := `.*Dump/system/build\.prop$`
-		re1, _ := regexp.Compile(pattern)
-
-		pattern = `.*private/var/installd/Library/MobileInstallation/LastBuildInfo.plist$`
-		re2, _ := regexp.Compile(pattern)
-
-		pattern = `.*packages.xml$`
-		re3, _ := regexp.Compile(pattern)
 
 		if re1.MatchString(name) {
 			result := get_android_details(f)
 
-			info_result = json_result{
-				OS_type: "Android",
-				Version: result[0] + " " + result[1],
-				Hash:    bs,
-			}
+			info_result.Manufacturer = result[0]
+			info_result.Version = result[2] + " " + result[3]
+			info_result.Product_Type = result[1]
 		} else if re2.MatchString(name) {
 			result := read_plist(f)
 
@@ -227,20 +233,30 @@ func listDirsInZip(zipPath string) ([]string, json_result, error) {
 			shortVersion, ok2 := result["ShortVersionString"].(string)
 
 			if ok1 && ok2 {
-				info_result = json_result{
-					OS_type: productName,
-					Version: shortVersion,
-					Hash:    bs,
-				}
+				info_result.Manufacturer = productName
+				info_result.Version = shortVersion
 			}
 		} else if re3.MatchString(name) {
 			pkgs := LoadPackagesXml(f)
 			for _, p := range pkgs.Package {
-				var app package_info
-				app.Name = p.Name
-				app.Version = p.Version
-				packages_list = append(packages_list, app)
+				packages_list = append(packages_list, p.Name)
 			}
+		} else if re4.MatchString(name) {
+			var rows *sql.Rows = OpenSQLiteFromBytes(f)
+			defer rows.Close()
+
+			for rows.Next() {
+				var t string
+				rows.Scan(&t)
+				packages_list = append(packages_list, t)
+			}
+		} else if re5.MatchString(name) {
+			log.Println(name)
+			result := read_plist(f)
+			var test = result["AccountToken"].([]byte)
+			var jsonMap map[string]interface{}
+			_, _ = plist.Unmarshal(test, &jsonMap)
+			info_result.Product_Type = jsonMap["ProductType"].(string)
 		}
 
 		parts := strings.Split(name, "/")
@@ -281,6 +297,8 @@ func get_android_details(f *zip.File) []string {
 	prefixes := []string{
 		"ro.build.version.release=",
 		"ro.build.version.security_patch=",
+		"ro.product.system.brand=",
+		"ro.product.system.model=",
 	}
 
 	rc, err := f.Open()
@@ -331,4 +349,28 @@ func appendResultToJSONArray(path string, r json_result) error {
 	}
 
 	return os.WriteFile(path, out, 0644)
+}
+
+func OpenSQLiteFromBytes(f *zip.File) *sql.Rows {
+	rc, _ := f.Open()
+
+	data, _ := io.ReadAll(rc)
+	rc.Close()
+
+	tmp, err := os.CreateTemp("", "sqlite-*.db")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer tmp.Close()
+
+	if _, err := tmp.Write(data); err != nil {
+		log.Fatal(err)
+	}
+
+	db, _ := sql.Open("sqlite", tmp.Name())
+	defer db.Close()
+
+	rows, _ := db.Query("select application_identifier from application_identifier_tab")
+
+	return rows
 }
