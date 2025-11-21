@@ -27,6 +27,7 @@ import (
 
 type json_result struct {
 	Manufacturer string
+	logical_path string
 	Product_Type string
 	Version      string
 	Hash         string
@@ -71,15 +72,8 @@ func main() {
 	log.Println("Application Ended")
 }
 
-func LoadPackagesXml(f *zip.File) *Packages {
+func LoadPackagesXml(rc io.ReadCloser) *Packages {
 	var pkgs Packages
-
-	rc, err := f.Open()
-	if err != nil {
-		log.Println(err)
-		return &pkgs
-	}
-	defer rc.Close()
 
 	data, err := io.ReadAll(rc)
 	if err != nil {
@@ -98,15 +92,7 @@ func LoadPackagesXml(f *zip.File) *Packages {
 	return &pkgs
 }
 
-func ExtractPackagesFromZipFile(f *zip.File) ([]PackageXML, error) {
-
-	rc, err := f.Open()
-	if err != nil {
-		log.Println(err)
-		return nil, err
-	}
-	defer rc.Close()
-
+func ExtractPackagesFromZipFile(rc io.ReadCloser) ([]PackageXML, error) {
 	data, err := io.ReadAll(rc)
 	if err != nil {
 		log.Println(err)
@@ -135,16 +121,8 @@ func setup_logging() *os.File {
 	return logFile
 }
 
-func is_XML_file(f *zip.File) bool {
-
-	rc, err := f.Open()
-	if err != nil {
-		log.Println(err)
-	}
-
-	defer rc.Close()
+func is_XML_file(rc io.ReadCloser) bool {
 	data, err := io.ReadAll(rc)
-	rc.Close()
 	if err != nil {
 		return false
 	}
@@ -270,6 +248,7 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 
 	info_result := json_result{
 		Hash: bs,
+		logical_path: zipPath,
 	}
 	var packages_list []string
 
@@ -299,9 +278,15 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 	activation_record, _ := regexp.Compile(pattern)
 
 	for _, f := range r.File {
+		rc, err := f.Open()
+		if err != nil {
+			log.Println(err)
+		}
+		defer rc.Close()
+
 		name := filepath.ToSlash(f.Name)
 		if build_prop.MatchString(name) {
-			result := get_android_details(f)
+			result := get_android_details(rc)
 			if len(result) == 4 {
 				info_result.Manufacturer = result[0]
 				info_result.Version = result[2] + " " + result[3]
@@ -310,7 +295,7 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 				log.Println(result)
 			}
 		} else if lastbuildinfo.MatchString(name) {
-			result := read_plist(f)
+			result := read_plist(rc)
 			if result != nil {
 				productName, ok1 := result["ProductName"].(string)
 				shortVersion, ok2 := result["ShortVersionString"].(string)
@@ -321,16 +306,20 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 				}
 			}
 		} else if packages.MatchString(name) {
-			if !is_XML_file(f) {
-				pkgs := LoadPackagesXml(f)
+			if !is_XML_file(rc) {
+				pkgs := LoadPackagesXml(rc)
 				for _, p := range pkgs.Package {
 					packages_list = append(packages_list, p.Name)
 				}
 			} else {
 				log.Println(zipPath)
+				var packages, err = ExtractPackagesFromZipFile(rc)
+				if err != nil {
+					log.Println(packages)
+				}
 			}
 		} else if application_state.MatchString(name) {
-			var rows *sql.Rows = extract_apps_in_sqlite(f)
+			var rows *sql.Rows = extract_apps_in_sqlite(rc)
 			if rows == nil {
 				log.Println(zipPath)
 			} else {
@@ -342,7 +331,7 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 				rows.Close()
 			}
 		} else if activation_record.MatchString(name) {
-			result := read_plist(f)
+			result := read_plist(rc)
 			if result != nil {
 				var test = result["AccountToken"].([]byte)
 				var jsonMap map[string]interface{}
@@ -369,37 +358,25 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 	return dirs, info_result, nil
 }
 
-func read_plist(f *zip.File) map[string]any {
-	rc, err := f.Open()
-	if err != nil {
-		log.Println(err)
-		return nil
-	}
+func read_plist(rc io.ReadCloser) map[string]any {
 	data, _ := io.ReadAll(rc)
-	rc.Close()
 
 	var result map[string]any
-	_, err = plist.Unmarshal(data, &result)
+	var format, err = plist.Unmarshal(data, &result)
 	if err != nil {
-		log.Println(err)
+		log.Println(err, format)
 		return nil
 	}
 	return result
 }
 
-func get_android_details(f *zip.File) []string {
+func get_android_details(rc io.ReadCloser) []string {
 	prefixes := []string{
 		"ro.build.version.release=",
 		"ro.build.version.security_patch=",
 		"ro.product.system.brand=",
 		"ro.product.system.model=",
 	}
-
-	rc, err := f.Open()
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer rc.Close()
 
 	var result []string
 	scanner := bufio.NewScanner(rc)
@@ -415,7 +392,8 @@ func get_android_details(f *zip.File) []string {
 	}
 
 	if err := scanner.Err(); err != nil {
-		log.Fatal(err)
+		log.Println(err)
+		return nil
 	}
 	return result
 }
@@ -439,21 +417,19 @@ func build_json_results(path string, r json_result) error {
 
 	out, err := json.MarshalIndent(list, "", "  ")
 	if err != nil {
+		log.Println(err)
 		return err
 	}
 
 	return os.WriteFile(path, out, 0644)
 }
 
-func extract_apps_in_sqlite(f *zip.File) *sql.Rows {
-	rc, _ := f.Open()
-
+func extract_apps_in_sqlite(rc io.ReadCloser) *sql.Rows {
 	data, err := io.ReadAll(rc)
 	if err != nil {
 		log.Println(err)
 		return nil
 	}
-	rc.Close()
 
 	tmp, err := os.CreateTemp("", "sqlite-*.db")
 	if err != nil {
