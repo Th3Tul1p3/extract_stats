@@ -70,10 +70,75 @@ func main() {
 	}
 
 	log.Println("Application started in ", dir)
-	var total_counter = list_zip_files(dir)
+	list_zip_files(dir)
 
-	log.Println("Number of Zip founded: ", total_counter)
 	log.Println("Application Ended")
+}
+
+func OpenDB() (*sql.DB, error) {
+	db, err := sql.Open("sqlite", "zip.sqlite")
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = db.Exec(`
+        CREATE TABLE IF NOT EXISTS paths (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            value TEXT NOT NULL
+        );
+    `)
+	if err != nil {
+		return nil, err
+	}
+
+	return db, nil
+}
+
+func InsertStrings(db *sql.DB, values []string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+
+	_, err = db.Exec("DELETE FROM paths")
+	if err != nil {
+		return err
+	}
+
+	stmt, err := tx.Prepare("INSERT INTO paths(value) VALUES (?)")
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, v := range values {
+		_, err := stmt.Exec(v)
+		if err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func GetAllValues(db *sql.DB) ([]string, error) {
+	rows, err := db.Query("SELECT value FROM paths")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		result = append(result, v)
+	}
+
+	return result, rows.Err()
 }
 
 func Read_abx_files(f *zip.File) (*Packages, error) {
@@ -152,46 +217,65 @@ func is_XML_file(f *zip.File) bool {
 	return bytes.HasPrefix(trimmed, []byte("<?xml"))
 }
 
-func list_zip_files(root string) int {
+func list_zip_files(root string) {
 	var total_counter int = 0
 	var extractions_counter int = 0
 	var zip_path []string
 
-	log.Println("Search Zip files")
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir(){
-			return nil
-		}
+	var db, err = OpenDB()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
 
-		if strings.HasSuffix(strings.ToLower(d.Name()), ".zip") {
-			total_counter++
-			lower := strings.ToLower(path)
+	values, err := GetAllValues(db)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-			if !strings.Contains(lower, "takeout") &&
-				!strings.Contains(lower, "icloud") &&
-				!strings.Contains(lower, "onedrive") &&
-				!strings.Contains(lower, "leapp") &&
-				!strings.Contains(lower, "axiom") {
+	if len(values) > 0 {
+		log.Println("taking zip files from sqlite")
+		zip_path = values
+	} else {
+		log.Println("Search Zip files")
+		err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
 
-				if !strings.Contains(lower, "logical") && !strings.Contains(lower, "wiko") {
-					zip_path = append(zip_path, path)
-				} else {
-					extractions_counter++
+			if strings.HasSuffix(strings.ToLower(d.Name()), ".zip") {
+				total_counter++
+				lower := strings.ToLower(path)
+
+				if !strings.Contains(lower, "takeout") &&
+					!strings.Contains(lower, "icloud") &&
+					!strings.Contains(lower, "onedrive") &&
+					!strings.Contains(lower, "leapp") &&
+					!strings.Contains(lower, "axiom") {
+
+					if !strings.Contains(lower, "logical") && !strings.Contains(lower, "wiko") {
+						zip_path = append(zip_path, path)
+					} else {
+						extractions_counter++
+					}
 				}
 			}
+			return nil
+		})
+
+		if err != nil {
+			log.Println(err)
 		}
-		return nil
-	})
 
-	log.Println("Number of Zip founded: ", total_counter)
-	log.Println("Processing Zip files")
-
-	process_all_zip(zip_path, extractions_counter)
-
-	if err != nil {
-		log.Println(err)
+		log.Println("Number of Zip founded: ", total_counter)
+		log.Println("Écriture terminée dans zip.sqlite")
+		if err := InsertStrings(db, zip_path); err != nil {
+			log.Fatal(err)
+		}
 	}
-	return total_counter
+
+	log.Println("Processing Zip files")
+	process_all_zip(zip_path, extractions_counter)
 }
 
 func process_all_zip(zipPaths []string, extractionsCounter int) {
@@ -205,6 +289,12 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 	for range workerCount {
 		wg.Go(func() {
 			for path := range jobs {
+				_, err := os.Stat(path)
+				if err != nil {
+					log.Println("Ce zip n'existe plus: ", path)
+					continue
+				}
+
 				dirs, infoResult, err := extract_infos_zip(path)
 				if err != nil || len(dirs) == 0 {
 					continue
@@ -253,7 +343,7 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 
 	wg.Wait()
 
-	log.Println("Total extractions:", extractionsCounter)
+	log.Println("Total extractions parsed:", extractionsCounter)
 }
 
 func extract_infos_zip(zipPath string) ([]string, json_result, error) {
@@ -300,6 +390,8 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 				info_result.Manufacturer = result[0]
 				info_result.Version = result[2] + " " + result[3]
 				info_result.Product_Type = result[1]
+			} else if len(result) == 2 {
+				info_result.Version = result[0] + " " + result[1]
 			} else {
 				log.Println(result)
 			}
@@ -333,8 +425,8 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 				}
 			}
 		} else if application_state.MatchString(name) {
-			var rows , err = extract_apps_in_sqlite(f)
-			if err != nil {
+			var rows, err = extract_apps_in_sqlite(f)
+			if err != nil || rows == nil {
 				log.Println(zipPath, err)
 			} else {
 				for rows.Next() {
@@ -470,7 +562,6 @@ func extract_apps_in_sqlite(f *zip.File) (*sql.Rows, error) {
 	defer tmp.Close()
 
 	if _, err := tmp.Write(data); err != nil {
-		log.Println(err)
 		return nil, err
 	}
 

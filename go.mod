@@ -9,6 +9,7 @@ require (
 	github.com/glebarez/go-sqlite v1.22.0 // indirect
 	github.com/google/uuid v1.5.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-sqlite3 v1.14.32 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/sagernet/abx-go v0.0.0-20220819185957-dba1257d738e // indirect
 	github.com/sagernet/sing v0.0.0-20220801112236-1bb95f9661fc // indirect
