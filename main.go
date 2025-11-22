@@ -19,6 +19,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
+	"unsafe"
 
 	"github.com/sagernet/abx-go"
 	"howett.net/plist"
@@ -26,13 +29,14 @@ import (
 )
 
 type json_result struct {
-	Manufacturer string
-	logical_path string
-	Product_Type string
-	Version      string
-	Hash         string
-	Directory    []string
-	Packages     []string
+	Manufacturer    string   `json:"manufacturer"`
+	Logical_path    string   `json:"logical_path"`
+	Date_extraction string   `json:"date_extraction"`
+	Product_Type    string   `json:"product_type"`
+	Version         string   `json:"version"`
+	Hash            string   `json:"hash"`
+	Directory       []string `json:"directory"`
+	Packages        []string `json:"packages"`
 }
 
 type Packages struct {
@@ -72,37 +76,49 @@ func main() {
 	log.Println("Application Ended")
 }
 
-func LoadPackagesXml(rc io.ReadCloser) *Packages {
+func Read_abx_files(f *zip.File) (*Packages, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("ABX decode panic on file %s\n", f.Name)
+		}
+	}()
+
+	reader, _ := abx.NewReader(bytes.NewReader(data))
+	var decoder = xml.NewTokenDecoder(reader)
 	var pkgs Packages
 
-	data, err := io.ReadAll(rc)
-	if err != nil {
-		log.Println(err)
-		return &pkgs
-	}
-	reader, _ := abx.NewReader(bytes.NewReader(data))
-
-	decoder := xml.NewTokenDecoder(reader)
-
 	if err := decoder.Decode(&pkgs); err != nil {
-		log.Println(err)
-		return &pkgs
+		return nil, err
 	}
 
-	return &pkgs
+	return &pkgs, nil
 }
 
-func ExtractPackagesFromZipFile(rc io.ReadCloser) ([]PackageXML, error) {
+func ExtractPackagesFromZipFile(f *zip.File) ([]PackageXML, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
 	data, err := io.ReadAll(rc)
 	if err != nil {
-		log.Println(err)
 		return nil, err
 	}
 
 	var root PackagesXML
 
 	if err := xml.Unmarshal(data, &root); err != nil {
-		log.Println(err)
 		return nil, err
 	}
 
@@ -121,23 +137,19 @@ func setup_logging() *os.File {
 	return logFile
 }
 
-func is_XML_file(rc io.ReadCloser) bool {
+func is_XML_file(f *zip.File) bool {
+	rc, err := f.Open()
+	if err != nil {
+		return false
+	}
+	defer rc.Close()
 	data, err := io.ReadAll(rc)
 	if err != nil {
 		return false
 	}
 
 	trimmed := bytes.TrimSpace(data)
-	if !bytes.HasPrefix(trimmed, []byte("<?xml")) {
-		return false
-	}
-
-	var tmp interface{}
-	if err := xml.Unmarshal(data, &tmp); err != nil {
-		return false
-	}
-
-	return true
+	return bytes.HasPrefix(trimmed, []byte("<?xml"))
 }
 
 func list_zip_files(root string) int {
@@ -147,11 +159,7 @@ func list_zip_files(root string) int {
 
 	log.Println("Search Zip files")
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-
-		if d.IsDir() {
+		if err != nil || d.IsDir(){
 			return nil
 		}
 
@@ -165,7 +173,7 @@ func list_zip_files(root string) int {
 				!strings.Contains(lower, "leapp") &&
 				!strings.Contains(lower, "axiom") {
 
-				if !strings.Contains(lower, "logical") {
+				if !strings.Contains(lower, "logical") && !strings.Contains(lower, "wiko") {
 					zip_path = append(zip_path, path)
 				} else {
 					extractions_counter++
@@ -181,7 +189,7 @@ func list_zip_files(root string) int {
 	process_all_zip(zip_path, extractions_counter)
 
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
 	}
 	return total_counter
 }
@@ -197,13 +205,17 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 	for range workerCount {
 		wg.Go(func() {
 			for path := range jobs {
-				log.Println(path)
 				dirs, infoResult, err := extract_infos_zip(path)
 				if err != nil || len(dirs) == 0 {
 					continue
 				}
 
-				log.Printf("%s", path)
+				t, err := get_creation_time(path)
+				if err != nil {
+					panic(err)
+				}
+
+				infoResult.Date_extraction = t
 
 				if slices.Contains(dirs, "data/") {
 					if len(infoResult.Manufacturer) == 0 {
@@ -225,6 +237,7 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 					extractionsCounter++
 					mu.Unlock()
 				} else {
+					log.Printf("%s", path)
 					log.Println("TRIAGE!! Répertoires:", dirs)
 				}
 			}
@@ -247,9 +260,10 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 	bs := get_filename_hash(zipPath)
 
 	info_result := json_result{
-		Hash: bs,
-		logical_path: zipPath,
+		Hash:         bs,
+		Logical_path: zipPath,
 	}
+
 	var packages_list []string
 
 	r, err := zip.OpenReader(zipPath)
@@ -278,15 +292,10 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 	activation_record, _ := regexp.Compile(pattern)
 
 	for _, f := range r.File {
-		rc, err := f.Open()
-		if err != nil {
-			log.Println(err)
-		}
-		defer rc.Close()
-
 		name := filepath.ToSlash(f.Name)
+
 		if build_prop.MatchString(name) {
-			result := get_android_details(rc)
+			result := get_android_details(f)
 			if len(result) == 4 {
 				info_result.Manufacturer = result[0]
 				info_result.Version = result[2] + " " + result[3]
@@ -295,8 +304,8 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 				log.Println(result)
 			}
 		} else if lastbuildinfo.MatchString(name) {
-			result := read_plist(rc)
-			if result != nil {
+			result, err := read_plist(f)
+			if err == nil {
 				productName, ok1 := result["ProductName"].(string)
 				shortVersion, ok2 := result["ShortVersionString"].(string)
 
@@ -304,24 +313,29 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 					info_result.Manufacturer = productName
 					info_result.Version = shortVersion
 				}
+			} else {
+				log.Println(err)
 			}
 		} else if packages.MatchString(name) {
-			if !is_XML_file(rc) {
-				pkgs := LoadPackagesXml(rc)
-				for _, p := range pkgs.Package {
-					packages_list = append(packages_list, p.Name)
+			if !is_XML_file(f) {
+				pkgs, err := Read_abx_files(f)
+				if pkgs != nil {
+					for _, p := range pkgs.Package {
+						packages_list = append(packages_list, p.Name)
+					}
+				} else {
+					log.Println(err)
 				}
 			} else {
-				log.Println(zipPath)
-				var packages, err = ExtractPackagesFromZipFile(rc)
+				var _, err = ExtractPackagesFromZipFile(f)
 				if err != nil {
-					log.Println(packages)
+					log.Println("Error on: ", zipPath)
 				}
 			}
 		} else if application_state.MatchString(name) {
-			var rows *sql.Rows = extract_apps_in_sqlite(rc)
-			if rows == nil {
-				log.Println(zipPath)
+			var rows , err = extract_apps_in_sqlite(f)
+			if err != nil {
+				log.Println(zipPath, err)
 			} else {
 				for rows.Next() {
 					var t string
@@ -331,12 +345,14 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 				rows.Close()
 			}
 		} else if activation_record.MatchString(name) {
-			result := read_plist(rc)
-			if result != nil {
+			result, err := read_plist(f)
+			if err == nil {
 				var test = result["AccountToken"].([]byte)
-				var jsonMap map[string]interface{}
+				var jsonMap map[string]any
 				_, _ = plist.Unmarshal(test, &jsonMap)
 				info_result.Product_Type = jsonMap["ProductType"].(string)
+			} else {
+				log.Println(err)
 			}
 		}
 
@@ -358,19 +374,28 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 	return dirs, info_result, nil
 }
 
-func read_plist(rc io.ReadCloser) map[string]any {
+func read_plist(f *zip.File) (map[string]any, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
 	data, _ := io.ReadAll(rc)
 
 	var result map[string]any
-	var format, err = plist.Unmarshal(data, &result)
+	_, err = plist.Unmarshal(data, &result)
 	if err != nil {
-		log.Println(err, format)
-		return nil
+		return nil, err
 	}
-	return result
+	return result, nil
 }
 
-func get_android_details(rc io.ReadCloser) []string {
+func get_android_details(f *zip.File) []string {
+	rc, err := f.Open()
+	if err != nil {
+		log.Println(err)
+	}
+	defer rc.Close()
 	prefixes := []string{
 		"ro.build.version.release=",
 		"ro.build.version.security_patch=",
@@ -408,9 +433,11 @@ func get_filename_hash(zipPath string) string {
 func build_json_results(path string, r json_result) error {
 	var list []json_result
 
-	data, _ := os.ReadFile(path)
-	if len(data) > 0 {
-		_ = json.Unmarshal(data, &list)
+	data, err := os.ReadFile(path)
+	if err == nil && len(data) > 0 {
+		if err := json.Unmarshal(data, &list); err != nil {
+			log.Println("JSON unmarshal error:", err)
+		}
 	}
 
 	list = append(list, r)
@@ -424,29 +451,48 @@ func build_json_results(path string, r json_result) error {
 	return os.WriteFile(path, out, 0644)
 }
 
-func extract_apps_in_sqlite(rc io.ReadCloser) *sql.Rows {
+func extract_apps_in_sqlite(f *zip.File) (*sql.Rows, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+
 	data, err := io.ReadAll(rc)
 	if err != nil {
-		log.Println(err)
-		return nil
+		return nil, err
 	}
 
 	tmp, err := os.CreateTemp("", "sqlite-*.db")
 	if err != nil {
-		log.Println(err)
-		return nil
+		return nil, err
 	}
 	defer tmp.Close()
 
 	if _, err := tmp.Write(data); err != nil {
 		log.Println(err)
-		return nil
+		return nil, err
 	}
 
 	db, _ := sql.Open("sqlite", tmp.Name())
-	defer db.Close()
 
 	rows, _ := db.Query("select application_identifier from application_identifier_tab")
+	db.Close()
+	return rows, nil
+}
 
-	return rows
+func get_creation_time(path string) (string, error) {
+	var data syscall.Win32FileAttributeData
+	p, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return "", err
+	}
+
+	err = syscall.GetFileAttributesEx(p, syscall.GetFileExInfoStandard, (*byte)(unsafe.Pointer(&data)))
+	if err != nil {
+		return "", err
+	}
+
+	t := time.Unix(0, data.CreationTime.Nanoseconds())
+	return t.Format("02.01.2006"), nil
 }
