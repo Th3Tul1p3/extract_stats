@@ -35,7 +35,8 @@ type json_result struct {
 	Product_Type    string   `json:"product_type"`
 	Version         string   `json:"version"`
 	Hash            string   `json:"hash"`
-	Directory       []string `json:"directory"`
+	directory       []string `json:"directory"`
+	Extraction_type string   `json:"extraction_type"`
 	Packages        []string `json:"packages"`
 }
 
@@ -234,7 +235,7 @@ func list_zip_files(root string) {
 	}
 
 	if len(values) > 0 {
-		log.Println("taking zip files from sqlite")
+		log.Println("Taking zip files from sqlite")
 		zip_path = values
 	} else {
 		log.Println("Search Zip files")
@@ -251,7 +252,13 @@ func list_zip_files(root string) {
 					!strings.Contains(lower, "icloud") &&
 					!strings.Contains(lower, "onedrive") &&
 					!strings.Contains(lower, "leapp") &&
-					!strings.Contains(lower, "axiom") {
+					!strings.Contains(lower, "axiom") &&
+					!strings.Contains(lower, "logging-") &&
+					!strings.Contains(lower, "nuix") &&
+					!strings.Contains(lower, "dropbox") &&
+					!strings.Contains(lower, "\\files\\") &&
+					!strings.Contains(lower, "\\rapport\\") &&
+					!strings.Contains(lower, "_utilisateurs") {
 
 					if !strings.Contains(lower, "logical") && !strings.Contains(lower, "wiko") {
 						zip_path = append(zip_path, path)
@@ -358,7 +365,6 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
-		log.Println(err)
 		return nil, info_result, err
 	}
 
@@ -366,23 +372,23 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 
 	dirSet := make(map[string]struct{})
 
-	pattern := `.*Dump/system/build\.prop$`
-	build_prop, _ := regexp.Compile(pattern)
-
-	pattern = `.*private/var/installd/Library/MobileInstallation/LastBuildInfo\.plist$`
-	lastbuildinfo, _ := regexp.Compile(pattern)
-
-	pattern = `.*/data/system/packages\.xml$`
-	packages, _ := regexp.Compile(pattern)
-
-	pattern = `.*private/var/mobile/Library/FrontBoard/applicationState\.db$`
-	application_state, _ := regexp.Compile(pattern)
-
-	pattern = `.*private/var/containers/Data/System/.*/Library/activation_records/activation_record\.plist$`
-	activation_record, _ := regexp.Compile(pattern)
+	build_prop, _ := regexp.Compile(`.*Dump/system/build\.prop$`)
+	lastbuildinfo_2, _ := regexp.Compile(`.*/System/Library/CoreServices/SystemVersion\.plist$`)
+	lastbuildinfo, _ := regexp.Compile(`.*private/var/installd/Library/MobileInstallation/LastBuildInfo\.plist$`)
+	packages, _ := regexp.Compile(`.*/system/packages\.xml$`)
+	application_state, _ := regexp.Compile(`.*private/var/mobile/Library/FrontBoard/applicationState\.db$`)
+	activation_record, _ := regexp.Compile(`.*private/var/containers/Data/System/.*/Library/activation_records/activation_record\.plist$`)
+	check_gk_name, _ := regexp.Compile(`^(?:[A-Za-z0-9]+-[A-Za-z0-9]+|[A-Za-z0-9]+)_files_full\.zip$`)
 
 	for _, f := range r.File {
 		name := filepath.ToSlash(f.Name)
+		if strings.Contains(zipPath, "UFED") && check_gk_name.MatchString(zipPath) {
+			info_result.Extraction_type = "E"
+		} else if strings.Contains(zipPath, "UFED") {
+			info_result.Extraction_type = "C"
+		} else if check_gk_name.MatchString(zipPath) {
+			info_result.Extraction_type = "G"
+		}
 
 		if build_prop.MatchString(name) {
 			result := get_android_details(f)
@@ -395,12 +401,11 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 			} else {
 				log.Println(result)
 			}
-		} else if lastbuildinfo.MatchString(name) {
+		} else if lastbuildinfo.MatchString(name) || lastbuildinfo_2.MatchString(name) {
 			result, err := read_plist(f)
 			if err == nil {
 				productName, ok1 := result["ProductName"].(string)
-				shortVersion, ok2 := result["ShortVersionString"].(string)
-
+				shortVersion, ok2 := result["ProductVersion"].(string)
 				if ok1 && ok2 {
 					info_result.Manufacturer = productName
 					info_result.Version = shortVersion
@@ -419,9 +424,13 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 					log.Println(err)
 				}
 			} else {
-				var _, err = ExtractPackagesFromZipFile(f)
+				var packages, err = ExtractPackagesFromZipFile(f)
 				if err != nil {
 					log.Println("Error on: ", zipPath)
+				} else {
+					for _, p := range packages {
+						packages_list = append(packages_list, p.Name)
+					}
 				}
 			}
 		} else if application_state.MatchString(name) {
@@ -461,7 +470,7 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 	}
 	sort.Strings(dirs)
 
-	info_result.Directory = dirs
+	info_result.directory = dirs
 	info_result.Packages = packages_list
 	return dirs, info_result, nil
 }
