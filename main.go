@@ -258,13 +258,12 @@ func list_zip_files(root string) {
 					!strings.Contains(lower, "dropbox") &&
 					!strings.Contains(lower, "\\files\\") &&
 					!strings.Contains(lower, "\\rapport\\") &&
-					!strings.Contains(lower, "_utilisateurs") {
+					!strings.Contains(lower, "_utilisateurs") &&
+					!strings.Contains(lower, "fastfacts") &&
+					!strings.Contains(lower, "sim_card.zip") {
 
-					if !strings.Contains(lower, "logical") && !strings.Contains(lower, "wiko") {
-						zip_path = append(zip_path, path)
-					} else {
-						extractions_counter++
-					}
+					zip_path = append(zip_path, path)
+
 				}
 			}
 			return nil
@@ -315,8 +314,22 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 				infoResult.Date_extraction = t
 
 				if slices.Contains(dirs, "data/") {
-					if len(infoResult.Manufacturer) == 0 {
-						infoResult.Manufacturer = "Android"
+					search_samsung_model := regexp.MustCompile(`SM-[A-Z]\d{3,4}[A-Z0-9]?(?:/[A-Z0-9]{1,4})?`)
+					//get_product_type_ufed, _ := regexp.Compile(`\s+\S+\s+(.*?)\s+\d{4}_\d{2}_\d{2}`)
+					re := regexp.MustCompile(`UFED\s*(.*?)\s*\d{4}_(0[1-9]|1[0-2])_([0-2][0-9]|3[01])`)
+
+					if len(infoResult.Manufacturer) == 0 && len(infoResult.Product_Type) == 0 && search_samsung_model.MatchString(path) {
+						infoResult.Manufacturer = "samsung"
+						infoResult.Product_Type = strings.ToLower(search_samsung_model.FindString(path))
+					} else if len(infoResult.Manufacturer) == 0 && strings.Contains(path, "UFED") {
+						match := re.FindStringSubmatch(path)
+						splits := strings.SplitN(match[1], " ", 2)
+						if len(splits) == 2 {
+							infoResult.Manufacturer = strings.ToLower(splits[0])
+							infoResult.Product_Type = strings.ToLower(splits[1])
+						}
+					} else if len(infoResult.Manufacturer) == 0 {
+						infoResult.Manufacturer = "android"
 					}
 
 					mu.Lock()
@@ -326,7 +339,7 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 
 				} else if slices.Contains(dirs, "applications/") || slices.Contains(dirs, "private/") {
 					if len(infoResult.Manufacturer) == 0 {
-						infoResult.Manufacturer = "Apple"
+						infoResult.Manufacturer = "apple"
 					}
 
 					mu.Lock()
@@ -334,8 +347,8 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 					extractionsCounter++
 					mu.Unlock()
 				} else {
-					log.Printf("%s", path)
-					log.Println("TRIAGE!! Répertoires:", dirs)
+					//log.Printf("%s", path)
+					//log.Println("TRIAGE!! Répertoires:", dirs)
 				}
 			}
 		})
@@ -378,36 +391,36 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 	packages, _ := regexp.Compile(`.*/system/packages\.xml$`)
 	application_state, _ := regexp.Compile(`.*private/var/mobile/Library/FrontBoard/applicationState\.db$`)
 	activation_record, _ := regexp.Compile(`.*private/var/containers/Data/System/.*/Library/activation_records/activation_record\.plist$`)
-	check_gk_name, _ := regexp.Compile(`^(?:[A-Za-z0-9]+-[A-Za-z0-9]+|[A-Za-z0-9]+)_files_full\.zip$`)
+	check_gk_name, _ := regexp.Compile(`.*\\(?:[A-Za-z0-9]+-[A-Za-z0-9]+|[A-Za-z0-9]+)_files_[a-z]{0,7}.{0,4}\.zip$`)
+
+	if strings.Contains(zipPath, "UFED") && check_gk_name.MatchString(zipPath) {
+		info_result.Extraction_type = "E"
+	} else if strings.Contains(zipPath, "UFED") || strings.Contains(zipPath, "EXTRACTION_FFS") {
+		info_result.Extraction_type = "C"
+	} else if check_gk_name.MatchString(zipPath) {
+		info_result.Extraction_type = "G"
+	}
 
 	for _, f := range r.File {
 		name := filepath.ToSlash(f.Name)
-		if strings.Contains(zipPath, "UFED") && check_gk_name.MatchString(zipPath) {
-			info_result.Extraction_type = "E"
-		} else if strings.Contains(zipPath, "UFED") {
-			info_result.Extraction_type = "C"
-		} else if check_gk_name.MatchString(zipPath) {
-			info_result.Extraction_type = "G"
-		}
-
 		if build_prop.MatchString(name) {
 			result := get_android_details(f)
 			if len(result) == 4 {
-				info_result.Manufacturer = result[0]
+				info_result.Manufacturer = strings.ToLower(result[0])
 				info_result.Version = result[2] + " " + result[3]
 				info_result.Product_Type = result[1]
 			} else if len(result) == 2 {
 				info_result.Version = result[0] + " " + result[1]
-			} else {
+			} else if len(result) == 1 {
+				info_result.Version = result[0]
 				log.Println(result)
 			}
 		} else if lastbuildinfo.MatchString(name) || lastbuildinfo_2.MatchString(name) {
 			result, err := read_plist(f)
 			if err == nil {
-				productName, ok1 := result["ProductName"].(string)
 				shortVersion, ok2 := result["ProductVersion"].(string)
-				if ok1 && ok2 {
-					info_result.Manufacturer = productName
+				if ok2 {
+					info_result.Manufacturer = "apple"
 					info_result.Version = shortVersion
 				}
 			} else {
