@@ -19,9 +19,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
-	"time"
-	"unsafe"
 
 	"github.com/sagernet/abx-go"
 	"howett.net/plist"
@@ -219,6 +216,8 @@ func is_XML_file(f *zip.File) bool {
 }
 
 func list_zip_files(root string) {
+	//recherche tous les zip dans le répertoires si pas de fichier sqlite 
+	//sinon prend toutes les valeurs de la db 
 	var total_counter int = 0
 	var extractions_counter int = 0
 	var zip_path []string
@@ -248,6 +247,7 @@ func list_zip_files(root string) {
 				total_counter++
 				lower := strings.ToLower(path)
 
+				// tri
 				if !strings.Contains(lower, "takeout") &&
 					!strings.Contains(lower, "icloud") &&
 					!strings.Contains(lower, "onedrive") &&
@@ -284,6 +284,10 @@ func list_zip_files(root string) {
 	process_all_zip(zip_path, extractions_counter)
 }
 
+func add_zip_path(PATHS map[string][]string, chemin, zipfile string) {
+	PATHS[chemin] = append(PATHS[chemin], zipfile)
+}
+
 func process_all_zip(zipPaths []string, extractionsCounter int) {
 	workerCount := runtime.NumCPU()
 	jobs := make(chan string)
@@ -291,10 +295,12 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 	var wg sync.WaitGroup
 
 	var mu sync.Mutex
+	var PATHS = make(map[string][]string)
 
 	for range workerCount {
 		wg.Go(func() {
 			for path := range jobs {
+				//test si le chemin existe toujours
 				_, err := os.Stat(path)
 				if err != nil {
 					log.Println("Ce zip n'existe plus: ", path)
@@ -306,16 +312,31 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 					continue
 				}
 
+				// TEST
+				r, err := zip.OpenReader(path)
+				if err != nil {
+					continue
+				}
+				defer r.Close()
+
+				bs := get_filename_hash(path)
+				for _, f := range r.File {
+					if !f.FileInfo().IsDir() {
+						mu.Lock()
+						add_zip_path(PATHS, f.Name, bs)
+						mu.Unlock()
+					}
+				}
+				//
+
 				t, err := get_creation_time(path)
 				if err != nil {
 					panic(err)
 				}
-
 				infoResult.Date_extraction = t
 
 				if slices.Contains(dirs, "data/") {
 					search_samsung_model := regexp.MustCompile(`SM-[A-Z]\d{3,4}[A-Z0-9]?(?:/[A-Z0-9]{1,4})?`)
-					//get_product_type_ufed, _ := regexp.Compile(`\s+\S+\s+(.*?)\s+\d{4}_\d{2}_\d{2}`)
 					re := regexp.MustCompile(`UFED\s*(.*?)\s*\d{4}_(0[1-9]|1[0-2])_([0-2][0-9]|3[01])`)
 
 					if len(infoResult.Manufacturer) == 0 && len(infoResult.Product_Type) == 0 && search_samsung_model.MatchString(path) {
@@ -363,6 +384,42 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 
 	wg.Wait()
 
+	db, err := sql.Open("sqlite", "./files.sqlite")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	// Crée la table TOTO
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS pathsList (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			path TEXT NOT NULL,
+			zipfiles BLOB NOT NULL
+		);
+	`)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for chemin, zips := range PATHS {
+		// Encode la slice en JSON
+		zipfilesJSON, err := json.Marshal(zips)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		// Insère dans la base
+		_, err = db.Exec(
+			"INSERT OR REPLACE INTO pathsList (path, zipfiles) VALUES (?, ?)",
+			chemin,
+			zipfilesJSON,
+		)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
 	log.Println("Total extractions parsed:", extractionsCounter)
 }
 
@@ -380,7 +437,6 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 	if err != nil {
 		return nil, info_result, err
 	}
-
 	defer r.Close()
 
 	dirSet := make(map[string]struct{})
@@ -396,12 +452,15 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 	if strings.Contains(zipPath, "UFED") && check_gk_name.MatchString(zipPath) {
 		info_result.Extraction_type = "E"
 	} else if strings.Contains(zipPath, "UFED") || strings.Contains(zipPath, "EXTRACTION_FFS") {
-		info_result.Extraction_type = "C"
+		info_result.Extraction_type = "Cellebrite"
 	} else if check_gk_name.MatchString(zipPath) {
-		info_result.Extraction_type = "G"
+		info_result.Extraction_type = "Graykey"
 	}
 
+	var files []string
+
 	for _, f := range r.File {
+		files = append(files, f.Name)
 		name := filepath.ToSlash(f.Name)
 		if build_prop.MatchString(name) {
 			result := get_android_details(f)
@@ -477,6 +536,8 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 		}
 	}
 
+	log.Println("Nombre de fichiers retrouvés : ", len(files))
+
 	var dirs []string
 	for d := range dirSet {
 		dirs = append(dirs, strings.ToLower(d))
@@ -545,6 +606,7 @@ func get_filename_hash(zipPath string) string {
 }
 
 func build_json_results(path string, r json_result) error {
+	// écris les résultats au fur et à mesure du traitement dans le fichier json
 	var list []json_result
 
 	data, err := os.ReadFile(path)
@@ -595,17 +657,11 @@ func extract_apps_in_sqlite(f *zip.File) (*sql.Rows, error) {
 }
 
 func get_creation_time(path string) (string, error) {
-	var data syscall.Win32FileAttributeData
-	p, err := syscall.UTF16PtrFromString(path)
+	fileInfo, err := os.Stat(path)
 	if err != nil {
 		return "", err
 	}
 
-	err = syscall.GetFileAttributesEx(p, syscall.GetFileExInfoStandard, (*byte)(unsafe.Pointer(&data)))
-	if err != nil {
-		return "", err
-	}
-
-	t := time.Unix(0, data.CreationTime.Nanoseconds())
-	return t.Format("02.01.2006"), nil
+	creationTime := fileInfo.ModTime()
+	return creationTime.Format("02.01.2006"), nil
 }
