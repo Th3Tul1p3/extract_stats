@@ -9,6 +9,9 @@ import (
 	"encoding/xml"
 	"io"
 	"log"
+	"monprojet/internal/dbstore"
+	"monprojet/internal/model"
+	"monprojet/internal/util"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,12 +20,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"monprojet/internal/dbstore"
-	"monprojet/internal/model"
-	"monprojet/internal/util"
 
-
-	"github.com/sagernet/abx-go"
 	_ "modernc.org/sqlite"
 )
 
@@ -42,35 +40,6 @@ func main() {
 	list_zip_files(dir)
 
 	log.Println("Application Ended")
-}
-
-func Read_abx_files(f *zip.File) (*model.Packages, error) {
-	rc, err := f.Open()
-	if err != nil {
-		return nil, err
-	}
-	defer rc.Close()
-
-	data, err := io.ReadAll(rc)
-	if err != nil {
-		return nil, err
-	}
-
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("ABX decode panic on file %s\n", f.Name)
-		}
-	}()
-
-	reader, _ := abx.NewReader(bytes.NewReader(data))
-	var decoder = xml.NewTokenDecoder(reader)
-	var pkgs model.Packages
-
-	if err := decoder.Decode(&pkgs); err != nil {
-		return nil, err
-	}
-
-	return &pkgs, nil
 }
 
 func ExtractPackagesFromZipFile(f *zip.File) ([]model.PackageXML, error) {
@@ -121,8 +90,8 @@ func is_XML_file(f *zip.File) bool {
 }
 
 func list_zip_files(root string) {
-	//recherche tous les zip dans le répertoires si pas de fichier sqlite 
-	//sinon prend toutes les valeurs de la db 
+	//recherche tous les zip dans le répertoires si pas de fichier sqlite
+	//sinon prend toutes les valeurs de la db
 	var total_counter int = 0
 	var extractions_counter int = 0
 	var zip_path []string
@@ -254,7 +223,7 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 					}
 
 					mu.Lock()
-					build_json_results(json_filename, infoResult)
+					util.Build_json_results(json_filename, infoResult)
 					extractionsCounter++
 					mu.Unlock()
 
@@ -264,7 +233,7 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 					}
 
 					mu.Lock()
-					build_json_results(json_filename, infoResult)
+					util.Build_json_results(json_filename, infoResult)
 					extractionsCounter++
 					mu.Unlock()
 				} else {
@@ -387,7 +356,7 @@ func extract_infos_zip(zipPath string) ([]string, model.Json_result, error) {
 			}
 		} else if packages.MatchString(name) {
 			if !is_XML_file(f) {
-				pkgs, err := Read_abx_files(f)
+				pkgs, err := util.Read_abx_files(f)
 				if pkgs != nil {
 					for _, p := range pkgs.Package {
 						packages_list = append(packages_list, p.Name)
@@ -480,28 +449,6 @@ func get_android_details(f *zip.File) []string {
 		return nil
 	}
 	return result
-}
-
-func build_json_results(path string, r model.Json_result) error {
-	// écris les résultats au fur et à mesure du traitement dans le fichier json
-	var list []model.Json_result
-
-	data, err := os.ReadFile(path)
-	if err == nil && len(data) > 0 {
-		if err := json.Unmarshal(data, &list); err != nil {
-			log.Println("JSON unmarshal error:", err)
-		}
-	}
-
-	list = append(list, r)
-
-	out, err := json.MarshalIndent(list, "", "  ")
-	if err != nil {
-		log.Println(err)
-		return err
-	}
-
-	return os.WriteFile(path, out, 0644)
 }
 
 func extract_apps_in_sqlite(f *zip.File) (*sql.Rows, error) {
