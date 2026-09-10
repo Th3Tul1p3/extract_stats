@@ -20,41 +20,12 @@ import (
 	"strings"
 	"sync"
 	"monprojet/internal/dbstore"
+	"monprojet/internal/model"
 
 	"github.com/sagernet/abx-go"
 	"howett.net/plist"
 	_ "modernc.org/sqlite"
 )
-
-type json_result struct {
-	Manufacturer    string   `json:"manufacturer"`
-	Logical_path    string   `json:"logical_path"`
-	Date_extraction string   `json:"date_extraction"`
-	Product_Type    string   `json:"product_type"`
-	Version         string   `json:"version"`
-	Hash            string   `json:"hash"`
-	directory       []string `json:"directory"`
-	Extraction_type string   `json:"extraction_type"`
-	Packages        []string `json:"packages"`
-}
-
-type Packages struct {
-	XMLName xml.Name   `xml:"packages"`
-	Package []PkgEntry `xml:"package"`
-}
-
-type PkgEntry struct {
-	Name    string `xml:"name,attr"`
-	Version string `xml:"version,attr"`
-}
-
-type PackageXML struct {
-	Name string `xml:"name,attr"`
-}
-
-type PackagesXML struct {
-	Items []PackageXML `xml:"package"`
-}
 
 func main() {
 	logFile := setup_logging()
@@ -74,7 +45,7 @@ func main() {
 	log.Println("Application Ended")
 }
 
-func Read_abx_files(f *zip.File) (*Packages, error) {
+func Read_abx_files(f *zip.File) (*model.Packages, error) {
 	rc, err := f.Open()
 	if err != nil {
 		return nil, err
@@ -94,7 +65,7 @@ func Read_abx_files(f *zip.File) (*Packages, error) {
 
 	reader, _ := abx.NewReader(bytes.NewReader(data))
 	var decoder = xml.NewTokenDecoder(reader)
-	var pkgs Packages
+	var pkgs model.Packages
 
 	if err := decoder.Decode(&pkgs); err != nil {
 		return nil, err
@@ -103,7 +74,7 @@ func Read_abx_files(f *zip.File) (*Packages, error) {
 	return &pkgs, nil
 }
 
-func ExtractPackagesFromZipFile(f *zip.File) ([]PackageXML, error) {
+func ExtractPackagesFromZipFile(f *zip.File) ([]model.PackageXML, error) {
 	rc, err := f.Open()
 	if err != nil {
 		return nil, err
@@ -114,7 +85,7 @@ func ExtractPackagesFromZipFile(f *zip.File) ([]PackageXML, error) {
 		return nil, err
 	}
 
-	var root PackagesXML
+	var root model.PackagesXML
 
 	if err := xml.Unmarshal(data, &root); err != nil {
 		return nil, err
@@ -357,10 +328,10 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 	log.Println("Total extractions parsed:", extractionsCounter)
 }
 
-func extract_infos_zip(zipPath string) ([]string, json_result, error) {
+func extract_infos_zip(zipPath string) ([]string, model.Json_result, error) {
 	bs := get_filename_hash(zipPath)
 
-	info_result := json_result{
+	info_result := model.Json_result{
 		Hash:         bs,
 		Logical_path: zipPath,
 	}
@@ -478,7 +449,7 @@ func extract_infos_zip(zipPath string) ([]string, json_result, error) {
 	}
 	sort.Strings(dirs)
 
-	info_result.directory = dirs
+	info_result.Directory = dirs
 	info_result.Packages = packages_list
 	return dirs, info_result, nil
 }
@@ -539,9 +510,9 @@ func get_filename_hash(zipPath string) string {
 	return bs
 }
 
-func build_json_results(path string, r json_result) error {
+func build_json_results(path string, r model.Json_result) error {
 	// écris les résultats au fur et à mesure du traitement dans le fichier json
-	var list []json_result
+	var list []model.Json_result
 
 	data, err := os.ReadFile(path)
 	if err == nil && len(data) > 0 {
