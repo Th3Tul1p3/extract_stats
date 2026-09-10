@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"monprojet/internal/dbstore"
 
 	"github.com/sagernet/abx-go"
 	"howett.net/plist"
@@ -71,72 +72,6 @@ func main() {
 	list_zip_files(dir)
 
 	log.Println("Application Ended")
-}
-
-func OpenDB() (*sql.DB, error) {
-	db, err := sql.Open("sqlite", "zip.sqlite")
-	if err != nil {
-		return nil, err
-	}
-
-	_, err = db.Exec(`
-        CREATE TABLE IF NOT EXISTS paths (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            value TEXT NOT NULL
-        );
-    `)
-	if err != nil {
-		return nil, err
-	}
-
-	return db, nil
-}
-
-func InsertStrings(db *sql.DB, values []string) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-
-	_, err = db.Exec("DELETE FROM paths")
-	if err != nil {
-		return err
-	}
-
-	stmt, err := tx.Prepare("INSERT INTO paths(value) VALUES (?)")
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	for _, v := range values {
-		_, err := stmt.Exec(v)
-		if err != nil {
-			tx.Rollback()
-			return err
-		}
-	}
-
-	return tx.Commit()
-}
-
-func GetAllValues(db *sql.DB) ([]string, error) {
-	rows, err := db.Query("SELECT value FROM paths")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []string
-	for rows.Next() {
-		var v string
-		if err := rows.Scan(&v); err != nil {
-			return nil, err
-		}
-		result = append(result, v)
-	}
-
-	return result, rows.Err()
 }
 
 func Read_abx_files(f *zip.File) (*Packages, error) {
@@ -222,13 +157,13 @@ func list_zip_files(root string) {
 	var extractions_counter int = 0
 	var zip_path []string
 
-	var db, err = OpenDB()
+	var db, err = dbstore.Init_db()
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
 
-	values, err := GetAllValues(db)
+	values, err := dbstore.GetAllValues(db)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -247,7 +182,6 @@ func list_zip_files(root string) {
 				total_counter++
 				lower := strings.ToLower(path)
 
-				// tri
 				if !strings.Contains(lower, "takeout") &&
 					!strings.Contains(lower, "icloud") &&
 					!strings.Contains(lower, "onedrive") &&
@@ -275,7 +209,7 @@ func list_zip_files(root string) {
 
 		log.Println("Number of Zip founded: ", total_counter)
 		log.Println("Écriture terminée dans zip.sqlite")
-		if err := InsertStrings(db, zip_path); err != nil {
+		if err := dbstore.InsertStrings(db, zip_path); err != nil {
 			log.Fatal(err)
 		}
 	}
