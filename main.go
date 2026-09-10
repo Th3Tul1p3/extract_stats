@@ -188,10 +188,6 @@ func list_zip_files(root string) {
 	process_all_zip(zip_path, extractions_counter)
 }
 
-func add_zip_path(PATHS map[string][]string, chemin, zipfile string) {
-	PATHS[chemin] = append(PATHS[chemin], zipfile)
-}
-
 func process_all_zip(zipPaths []string, extractionsCounter int) {
 	workerCount := runtime.NumCPU()
 	jobs := make(chan string)
@@ -227,7 +223,7 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 				for _, f := range r.File {
 					if !f.FileInfo().IsDir() {
 						mu.Lock()
-						add_zip_path(PATHS, f.Name, bs)
+						util.Add_zip_path(PATHS, f.Name, bs)
 						mu.Unlock()
 					}
 				}

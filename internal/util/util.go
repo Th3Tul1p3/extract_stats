@@ -27,6 +27,10 @@ func Get_filename_hash(zipPath string) string {
 	return bs
 }
 
+func Add_zip_path(PATHS map[string][]string, chemin, zipfile string) {
+	PATHS[chemin] = append(PATHS[chemin], zipfile)
+}
+
 func Read_plist(f *zip.File) (map[string]any, error) {
 	rc, err := f.Open()
 	if err != nil {
