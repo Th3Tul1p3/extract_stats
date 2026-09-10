@@ -4,9 +4,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"bytes"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"io"
@@ -21,9 +19,10 @@ import (
 	"sync"
 	"monprojet/internal/dbstore"
 	"monprojet/internal/model"
+	"monprojet/internal/util"
+
 
 	"github.com/sagernet/abx-go"
-	"howett.net/plist"
 	_ "modernc.org/sqlite"
 )
 
@@ -224,7 +223,7 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 				}
 				defer r.Close()
 
-				bs := get_filename_hash(path)
+				bs := util.Get_filename_hash(path)
 				for _, f := range r.File {
 					if !f.FileInfo().IsDir() {
 						mu.Lock()
@@ -234,7 +233,7 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 				}
 				//
 
-				t, err := get_creation_time(path)
+				t, err := util.Get_creation_time(path)
 				if err != nil {
 					panic(err)
 				}
@@ -329,7 +328,7 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 }
 
 func extract_infos_zip(zipPath string) ([]string, model.Json_result, error) {
-	bs := get_filename_hash(zipPath)
+	bs := util.Get_filename_hash(zipPath)
 
 	info_result := model.Json_result{
 		Hash:         bs,
@@ -380,7 +379,7 @@ func extract_infos_zip(zipPath string) ([]string, model.Json_result, error) {
 				log.Println(result)
 			}
 		} else if lastbuildinfo.MatchString(name) || lastbuildinfo_2.MatchString(name) {
-			result, err := read_plist(f)
+			result, err := util.Read_plist(f)
 			if err == nil {
 				shortVersion, ok2 := result["ProductVersion"].(string)
 				if ok2 {
@@ -423,12 +422,12 @@ func extract_infos_zip(zipPath string) ([]string, model.Json_result, error) {
 				rows.Close()
 			}
 		} else if activation_record.MatchString(name) {
-			result, err := read_plist(f)
+			//result, err := util.Read_plist(f)
 			if err == nil {
-				var test = result["AccountToken"].([]byte)
-				var jsonMap map[string]any
-				_, _ = plist.Unmarshal(test, &jsonMap)
-				info_result.Product_Type = jsonMap["ProductType"].(string)
+				//var test = result["AccountToken"].([]byte)
+				//var jsonMap map[string]any
+				//_, _ = plist.Unmarshal(test, &jsonMap)
+				//info_result.Product_Type = jsonMap["ProductType"].(string)
 			} else {
 				log.Println(err)
 			}
@@ -452,22 +451,6 @@ func extract_infos_zip(zipPath string) ([]string, model.Json_result, error) {
 	info_result.Directory = dirs
 	info_result.Packages = packages_list
 	return dirs, info_result, nil
-}
-
-func read_plist(f *zip.File) (map[string]any, error) {
-	rc, err := f.Open()
-	if err != nil {
-		return nil, err
-	}
-	defer rc.Close()
-	data, _ := io.ReadAll(rc)
-
-	var result map[string]any
-	_, err = plist.Unmarshal(data, &result)
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
 }
 
 func get_android_details(f *zip.File) []string {
@@ -501,13 +484,6 @@ func get_android_details(f *zip.File) []string {
 		return nil
 	}
 	return result
-}
-
-func get_filename_hash(zipPath string) string {
-	h := sha256.New()
-	h.Write([]byte(zipPath))
-	bs := hex.EncodeToString(h.Sum(nil))
-	return bs
 }
 
 func build_json_results(path string, r model.Json_result) error {
@@ -559,14 +535,4 @@ func extract_apps_in_sqlite(f *zip.File) (*sql.Rows, error) {
 	rows, _ := db.Query("select application_identifier from application_identifier_tab")
 	db.Close()
 	return rows, nil
-}
-
-func get_creation_time(path string) (string, error) {
-	fileInfo, err := os.Stat(path)
-	if err != nil {
-		return "", err
-	}
-
-	creationTime := fileInfo.ModTime()
-	return creationTime.Format("02.01.2006"), nil
 }
