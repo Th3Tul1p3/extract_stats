@@ -181,23 +181,6 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 					continue
 				}
 
-				// TEST
-				r, err := zip.OpenReader(path)
-				if err != nil {
-					continue
-				}
-				defer r.Close()
-
-				bs := util.Get_filename_hash(path)
-				for _, f := range r.File {
-					if !f.FileInfo().IsDir() {
-						mu.Lock()
-						util.Add_zip_path(PATHS, f.Name, bs)
-						mu.Unlock()
-					}
-				}
-				//
-
 				t, err := util.Get_creation_time(path)
 				if err != nil {
 					panic(err)
@@ -302,6 +285,7 @@ func extract_infos_zip(zipPath string) ([]string, model.Json_result, error) {
 
 	var packages_list []string
 
+	log.Println("Opening zip:", zipPath)
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return nil, info_result, err
@@ -405,7 +389,7 @@ func extract_infos_zip(zipPath string) ([]string, model.Json_result, error) {
 		}
 	}
 
-	log.Println("Nombre de fichiers retrouvés : ", len(files))
+	//log.Println("Nombre de fichiers retrouvés : ", len(files))
 
 	var dirs []string
 	for d := range dirSet {
