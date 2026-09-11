@@ -133,7 +133,12 @@ func list_zip_files(root string) {
 					!strings.Contains(lower, "\\rapport\\") &&
 					!strings.Contains(lower, "_utilisateurs") &&
 					!strings.Contains(lower, "fastfacts") &&
-					!strings.Contains(lower, "sim_card.zip") {
+					!strings.Contains(lower, "keystore") &&
+					!strings.Contains(lower, "photorec") &&
+					!strings.Contains(lower, "snapchat") &&
+					!strings.Contains(lower, "tiktok") &&
+					!strings.Contains(lower, "sim card_sim") &&
+					!strings.Contains(lower, "sim_card") {
 
 					zip_path = append(zip_path, path)
 
@@ -196,10 +201,12 @@ func process_all_zip(zipPaths []string, extractionsCounter int) {
 						infoResult.Product_Type = strings.ToLower(search_samsung_model.FindString(path))
 					} else if len(infoResult.Manufacturer) == 0 && strings.Contains(path, "UFED") {
 						match := re.FindStringSubmatch(path)
-						splits := strings.SplitN(match[1], " ", 2)
-						if len(splits) == 2 {
-							infoResult.Manufacturer = strings.ToLower(splits[0])
-							infoResult.Product_Type = strings.ToLower(splits[1])
+						if len(match) > 1 {
+							splits := strings.SplitN(match[1], " ", 2)
+							if len(splits) == 2 {
+								infoResult.Manufacturer = strings.ToLower(splits[0])
+								infoResult.Product_Type = strings.ToLower(splits[1])
+							}
 						}
 					} else if len(infoResult.Manufacturer) == 0 {
 						infoResult.Manufacturer = "android"
