@@ -137,6 +137,7 @@ func list_zip_files(root string) {
 					!strings.Contains(lower, "photorec") &&
 					!strings.Contains(lower, "snapchat") &&
 					!strings.Contains(lower, "tiktok") &&
+					!strings.Contains(lower, "imagerie") &&
 					!strings.Contains(lower, "deltacar") &&
 					!strings.Contains(lower, "sim card_sim") &&
 					!strings.Contains(lower, "sim_card") {
