@@ -406,7 +406,7 @@ func extract_infos_zip(zipPath string) ([]string, model.Json_result, error) {
 	}
 	sort.Strings(dirs)
 
-	info_result.Directory = dirs
+	//info_result.Directory = dirs
 	info_result.Packages = packages_list
 	return dirs, info_result, nil
 }

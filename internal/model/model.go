@@ -9,7 +9,7 @@ type Json_result struct {
 	Product_Type    string   `json:"product_type"`
 	Version         string   `json:"version"`
 	Hash            string   `json:"hash"`
-	Directory       []string `json:"directory"`
+	//Directory       []string `json:"directory"`
 	Extraction_type string   `json:"extraction_type"`
 	Packages        []string `json:"packages"`
 }
