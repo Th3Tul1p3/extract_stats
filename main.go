@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 
+	"howett.net/plist"
 	_ "modernc.org/sqlite"
 )
 
@@ -380,12 +381,12 @@ func extract_infos_zip(zipPath string) ([]string, model.Json_result, error) {
 				rows.Close()
 			}
 		} else if activation_record.MatchString(name) {
-			//result, err := util.Read_plist(f)
+			result, err := util.Read_plist(f)
 			if err == nil {
-				//var test = result["AccountToken"].([]byte)
-				//var jsonMap map[string]any
-				//_, _ = plist.Unmarshal(test, &jsonMap)
-				//info_result.Product_Type = jsonMap["ProductType"].(string)
+				var test = result["AccountToken"].([]byte)
+				var jsonMap map[string]any
+				_, _ = plist.Unmarshal(test, &jsonMap)
+				info_result.Product_Type = jsonMap["ProductType"].(string)
 			} else {
 				log.Println(err)
 			}
