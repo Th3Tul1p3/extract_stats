@@ -312,11 +312,12 @@ func extract_infos_zip(zipPath string) ([]string, model.Json_result, error) {
 	activation_record, _ := regexp.Compile(`.*private/var/containers/Data/System/.*/Library/activation_records/activation_record\.plist$`)
 	check_gk_name, _ := regexp.Compile(`.*\\(?:[A-Za-z0-9]+-[A-Za-z0-9]+|[A-Za-z0-9]+)_files_[a-z]{0,7}.{0,4}\.zip$`)
 
+
 	if strings.Contains(zipPath, "UFED") && check_gk_name.MatchString(zipPath) {
 		info_result.Extraction_type = "E"
 	} else if strings.Contains(zipPath, "UFED") || strings.Contains(zipPath, "EXTRACTION_FFS") {
 		info_result.Extraction_type = "Cellebrite"
-	} else if check_gk_name.MatchString(zipPath) {
+	} else if check_gk_name.MatchString(zipPath) || strings.HasSuffix(zipPath, "_fs.zip") || strings.HasSuffix(zipPath, "-fs.zip") || strings.HasSuffix(zipPath, "_files_aiq-exter.zip"){
 		info_result.Extraction_type = "Graykey"
 	}
 
@@ -330,7 +331,7 @@ func extract_infos_zip(zipPath string) ([]string, model.Json_result, error) {
 			if len(result) == 4 {
 				info_result.Manufacturer = strings.ToLower(result[0])
 				info_result.Version = result[2] + " " + result[3]
-				info_result.Product_Type = result[1]
+				info_result.Product_Type = strings.ToLower(result[1])
 			} else if len(result) == 2 {
 				info_result.Version = result[0] + " " + result[1]
 			} else if len(result) == 1 {
@@ -386,7 +387,7 @@ func extract_infos_zip(zipPath string) ([]string, model.Json_result, error) {
 				var test = result["AccountToken"].([]byte)
 				var jsonMap map[string]any
 				_, _ = plist.Unmarshal(test, &jsonMap)
-				info_result.Product_Type = jsonMap["ProductType"].(string)
+				info_result.Product_Type = strings.ToLower(jsonMap["ProductType"].(string))
 			} else {
 				log.Println(err)
 			}
